@@ -1,0 +1,130 @@
+FROM php:7.3-fpm-buster
+
+# entrypoint.sh dependencies
+RUN set -ex; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        unzip \
+        locales \
+        dcraw \
+        default-mysql-client \
+        busybox-static \
+    ; \
+    rm -rf /var/lib/apt/lists/*;
+
+# install the PHP extensions we need
+# see https://docs.nextcloud.com/server/stable/admin_manual/installation/source_installation.html
+RUN set -ex; \
+    \
+    savedAptMark="$(apt-mark showmanual)"; \
+    \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+    libfreetype6-dev \
+    libjpeg62-turbo-dev \
+    libldap2-dev \
+    libxml2-dev \
+    libzip-dev \
+    libcurl4-gnutls-dev \
+    libwebp-dev \
+    libmagickwand-dev \
+    libgmp-dev \
+    ; \
+    \
+    debMultiarch="$(dpkg-architecture --query DEB_BUILD_MULTIARCH)"; \
+    if [ ! -e /usr/include/gmp.h ]; then ln -s /usr/include/$debMultiarch/gmp.h /usr/include/gmp.h; fi;\
+    docker-php-ext-configure gd --with-freetype-dir=/usr --with-png-dir=/usr --with-jpeg-dir=/usr --with-webp-dir=/usr; \
+    docker-php-ext-configure gmp --with-gmp="/usr/include/$debMultiarch"; \
+    docker-php-ext-configure ldap --with-libdir="lib/$debMultiarch"; \
+    docker-php-ext-install -j "$(nproc)" \
+        exif \
+        gd \
+        intl \
+        ldap \
+        opcache \
+        pcntl \
+        pdo_mysql \
+        zip \
+        gmp \
+    ; \
+    \
+# pecl will claim success even if one install fails, so we need to perform each install separately
+    pecl install imagick-3.4.4; \
+    \
+    docker-php-ext-enable \
+        imagick \
+    ; \
+    \
+# reset apt-mark's "manual" list so that "purge --auto-remove" will remove all build dependencies
+    apt-mark auto '.*' > /dev/null; \
+    apt-mark manual $savedAptMark; \
+    ldd "$(php -r 'echo ini_get("extension_dir");')"/*.so \
+        | awk '/=>/ { print $3 }' \
+        | sort -u \
+        | xargs -r dpkg-query -S \
+        | cut -d: -f1 \
+        | sort -u \
+        | xargs -rt apt-mark manual; \
+    \
+    apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false; \
+    rm -rf /var/lib/apt/lists/*
+
+# set recommended PHP.ini settings
+# see http://docs.filerun.com/php_configuration
+COPY filerun-optimization.ini /usr/local/etc/php/conf.d/
+
+# Install ionCube
+#COPY ioncube_loaders_lin_aarch64.tar.gz /ioncube.tar.gz
+RUN curl -o /ioncube.tar.gz -L http://downloads3.ioncube.com/loader_downloads/ioncube_loaders_lin_$(uname -m | sed 's/_/-/').tar.gz \
+ && tar xvfz /ioncube.tar.gz \
+ && PHP_EXT_DIR=$(php-config --extension-dir) \
+ && cp "ioncube/ioncube_loader_lin_7.3.so" $PHP_EXT_DIR \
+ && echo "zend_extension=ioncube_loader_lin_7.3.so" >> /usr/local/etc/php/conf.d/00_ioncube_loader_lin_7.3.ini \
+ && rm -rf ioncube /ioncube.tar.gz
+
+# set recommended PHP.ini settings
+# see https://docs.nextcloud.com/server/12/admin_manual/configuration_server/server_tuning.html#enable-php-opcache
+RUN { \
+        echo 'opcache.enable=1'; \
+        echo 'opcache.interned_strings_buffer=8'; \
+        echo 'opcache.max_accelerated_files=10000'; \
+        echo 'opcache.memory_consumption=128'; \
+        echo 'opcache.save_comments=1'; \
+        echo 'opcache.revalidate_freq=1'; \
+    } > /usr/local/etc/php/conf.d/opcache-recommended.ini; \
+    \
+    echo 'apc.enable_cli=1' >> /usr/local/etc/php/conf.d/docker-php-ext-apcu.ini; \
+    \
+    echo 'memory_limit=512M' > /usr/local/etc/php/conf.d/memory-limit.ini; \
+    \
+    mkdir /var/www/data; \
+    chown -R www-data:root /var/www; \
+    chmod -R g=u /var/www
+
+# Download FileRun installation package
+# COPY FileRun_2019_12_25_PHP_71-73.zip /filerun.zip
+RUN curl -o /filerun.zip -L https://filerun.com/download-latest-php73 \
+ && mkdir /user-files \
+ && chown www-data:www-data /user-files
+
+ENV FR_DB_HOST db
+ENV FR_DB_PORT 3306
+ENV FR_DB_NAME filerun
+ENV FR_DB_USER filerun
+ENV FR_DB_PASS filerun
+ENV APACHE_RUN_USER user
+ENV APACHE_RUN_USER_ID 1000
+ENV APACHE_RUN_GROUP user
+ENV APACHE_RUN_GROUP_ID 1000
+
+VOLUME ["/var/www/html", "/user-files"]
+
+COPY db.sql /filerun.setup.sql
+COPY autoconfig.php /
+
+COPY entrypoint.sh import-db.sh wait-for-it.sh /
+RUN chmod +x /*.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["php-fpm"]
