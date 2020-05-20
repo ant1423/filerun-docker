@@ -1,0 +1,39 @@
+diff --git a/system/classes/vendor/GuzzleHttp/Ring/Client/StreamHandler.php b/system/classes/vendor/GuzzleHttp/Ring/Client/StreamHandler.php
+index 4bacec1..c94290e 100644
+--- a/system/classes/vendor/GuzzleHttp/Ring/Client/StreamHandler.php
++++ b/system/classes/vendor/GuzzleHttp/Ring/Client/StreamHandler.php
+@@ -96,7 +96,14 @@ class StreamHandler
+             if (!is_resource($dest)) {
+                 $stream = Stream::factory($stream);
+             } else {
+-                stream_copy_to_stream($stream, $dest);
++                // stream_copy_to_stream($stream, $dest);
++                $chunk_size = 4 * 1024 * 1024;
++                stream_set_chunk_size($dest, $chunk_size);
++                $read_bytes = 0;
++                while (!feof($stream)) {
++                    $read_bytes += stream_copy_to_stream($stream, $dest, $chunk_size);
++                }
++
+                 fclose($stream);
+                 rewind($dest);
+                 return $dest;
+diff --git a/system/classes/vendor/Symfony/Component/HttpFoundation/BinaryFileResponse.php b/system/classes/vendor/Symfony/Component/HttpFoundation/BinaryFileResponse.php
+index 685642f..5a0de2b 100644
+--- a/system/classes/vendor/Symfony/Component/HttpFoundation/BinaryFileResponse.php
++++ b/system/classes/vendor/Symfony/Component/HttpFoundation/BinaryFileResponse.php
+@@ -264,7 +264,13 @@ class BinaryFileResponse extends Response
+         $out = fopen('php://output', 'wb');
+         $file = fopen($this->file->getPathname(), 'rb');
+ 
+-        stream_copy_to_stream($file, $out, $this->maxlen, $this->offset);
++        // stream_copy_to_stream($file, $out, $this->maxlen, $this->offset);
++        $chunk_size = 4 * 1024 * 1024;
++        stream_set_chunk_size($out, $chunk_size);
++        $read_bytes = 0;
++        while (!feof($file) && $read_bytes < $this->maxlen) {
++            $read_bytes += stream_copy_to_stream($file, $out, $chunk_size, $this->offset + $read_bytes);
++        }
+ 
+         fclose($out);
+         fclose($file);
